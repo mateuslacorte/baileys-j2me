@@ -1,0 +1,6 @@
+/target
+**/.DS_Store
+.DS_Store
+node-bridge/node_modules/
+sessions/*
+!sessions/.gitkeep
