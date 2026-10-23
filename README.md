@@ -191,7 +191,30 @@ openssl x509 -in wpp-self-cert.crt -outform DER -out cert.cer
 cp cert.cer cert.der
 ```
 
-### 2. Sample Nginx Reverse Proxy Configuration
+### 2. Create the API username and password
+
+Nginx enforces HTTP Basic Auth in front of the bridge; no Rust or Node changes
+are required. On Debian/Ubuntu, create a password file outside the web root:
+
+```bash
+sudo apt install -y apache2-utils
+sudo htpasswd -c /etc/nginx/baileys.htpasswd bridge-user
+sudo chown root:www-data /etc/nginx/baileys.htpasswd
+sudo chmod 640 /etc/nginx/baileys.htpasswd
+```
+
+`htpasswd` prompts for the password without putting it in shell history. Replace
+`bridge-user` with your username. Use printable ASCII credentials, with no colon
+in the username, to match the J2ME compiler. To change the password or add another
+user, run `sudo htpasswd /etc/nginx/baileys.htpasswd bridge-user` without `-c`
+(which would replace the file). Adjust `www-data` for your Nginx worker group.
+
+Keep port 8085 blocked from external access so clients cannot bypass Nginx. Use
+HTTPS in the phone build: Basic Auth encodes credentials and depends on TLS for
+transport protection. The HTTP virtual host below serves certificates and app
+files but redirects API requests to HTTPS.
+
+### 3. Sample Nginx Reverse Proxy Configuration
 Below is a battle-tested Nginx virtual host configuration tailored for vintage handsets:
 
 ```nginx
@@ -222,19 +245,9 @@ server {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
 
-    # Reverse proxy to the Rust Baileys server
+    # API clients must use HTTPS, including for their first request.
     location / {
-        proxy_pass http://127.0.0.1:8085/;
-        proxy_http_version 1.1;
-        proxy_buffering off;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $http_connection;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        return 301 https://$host$request_uri;
     }
 }
 
@@ -271,6 +284,9 @@ server {
     }
 
     location / {
+        auth_basic "WhatsApp J2ME bridge";
+        auth_basic_user_file /etc/nginx/baileys.htpasswd;
+        proxy_set_header Authorization "";
         proxy_pass http://127.0.0.1:8085/;
         proxy_http_version 1.1;
         proxy_buffering off;
@@ -285,6 +301,20 @@ server {
     }
 }
 ```
+
+Validate and reload Nginx, then check both cases:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+# Expect 401 without credentials:
+curl --cacert /etc/nginx/ssl/wpp-self-cert.crt -o /dev/null -w '%{http_code}\n' https://wpp.yourdomain.com/api/device/setup-check/status
+# Prompts for the password; expect 200 and JSON:
+curl --cacert /etc/nginx/ssl/wpp-self-cert.crt --user bridge-user https://wpp.yourdomain.com/api/device/setup-check/status
+```
+
+The authenticated check creates a test device session; do not pair it. If using
+an API subpath such as `/server/whatsapp/`, put the same `auth_basic` directives
+in that proxy location and configure the matching path in the client.
 
 ---
 
